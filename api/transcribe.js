@@ -1,5 +1,10 @@
 import OpenAI from "openai";
 
+export const config = {
+  runtime: "nodejs18.x",      // Ensure Node runtime, not Edge
+  maxDuration: 60             // Allow up to 60 seconds
+};
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -7,53 +12,43 @@ export default async function handler(req, res) {
     }
 
     const { audioUrl } = req.body;
-
     if (!audioUrl) {
       return res.status(400).json({ error: "audioUrl is required" });
     }
 
+    // -------------------------
+    // INIT OPENAI
+    // -------------------------
     const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+      apiKey: process.env.OPENAI_API_KEY
     });
 
-    // -----------------------------------------------------
-    // 1) Download binary audio CORRECTLY (Vercel fix)
-    // -----------------------------------------------------
-    const audioResponse = await fetch(audioUrl, {
-      method: "GET",
-      headers: {
-        "Range": "bytes=0-", // <--- forces full WAV download
-      }
-    });
+    // -------------------------
+    // STREAM AUDIO FROM SUPABASE (NO buffer)
+    // -------------------------
+    const response = await fetch(audioUrl);
 
-    if (!audioResponse.ok) {
-      return res.status(500).json({
-        error: "Failed to download audio: " + (await audioResponse.text())
-      });
+    if (!response.ok) {
+      return res.status(400).json({ error: "Could not fetch audio file" });
     }
 
-    const arrayBuffer = await audioResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const audioStream = response.body; // STREAM, NOT FILE
 
-    // -----------------------------------------------------
-    // 2) Whisper transcription using Buffer (NOT File)
-    // -----------------------------------------------------
-    const transcription = await client.audio.transcriptions.create({
+    // -------------------------
+    // STAGE 1 — RAW ASR
+    // -------------------------
+    const rawTranscription = await client.audio.transcriptions.create({
       model: "gpt-4o-transcribe",
-      file: {
-        buffer,
-        name: "audio.wav",
-        type: "audio/wav"
-      },
+      file: audioStream, // STREAMED
       prompt: process.env.SA_TRANSCRIBE_PROMPT,
       temperature: 0
     });
 
-    const rawText = transcription.text;
+    const rawText = rawTranscription.text || "";
 
-    // -----------------------------------------------------
-    // 3) Clean + translate + diarize
-    // -----------------------------------------------------
+    // -------------------------
+    // STAGE 2 — CLEAN / TRANSLATE / DIARIZE
+    // -------------------------
     const cleaned = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -65,17 +60,17 @@ export default async function handler(req, res) {
 
     const cleanText = cleaned.choices[0].message.content;
 
-    // -----------------------------------------------------
-    // 4) Return correct result
-    // -----------------------------------------------------
-    return res.status(200).json({
+    // -------------------------
+    // RETURN RESULT
+    // -------------------------
+    res.status(200).json({
       success: true,
       raw_transcript: rawText,
       clean_transcript: cleanText
     });
 
   } catch (error) {
-    console.error("TRANSCRIBE ERROR:", error);
+    console.error("❌ Vercel function error:", error);
     res.status(500).json({ error: error.message });
   }
 }
