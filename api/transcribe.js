@@ -43,7 +43,7 @@ export default async function handler(req, res) {
       prompt: process.env.SA_TRANSCRIBE_PROMPT,
       //response_format: "verbose_json",
       chunking_strategy: "auto",          // <—— REQUIRED for long calls
-      enable_diarization: true,           // optional but recommended
+      //enable_diarization: true,           // optional but recommended
       temperature: 0
     });
 
