@@ -1,8 +1,10 @@
 import OpenAI from "openai";
+import fetch from "node-fetch";
+import FormData from "form-data";
 
 export const config = {
-  runtime: "nodejs18.x",      // Ensure Node runtime, not Edge
-  maxDuration: 60             // Allow up to 60 seconds
+  runtime: "nodejs18.x",
+  maxDuration: 60
 };
 
 export default async function handler(req, res) {
@@ -12,43 +14,56 @@ export default async function handler(req, res) {
     }
 
     const { audioUrl } = req.body;
+
     if (!audioUrl) {
       return res.status(400).json({ error: "audioUrl is required" });
     }
 
-    // -------------------------
-    // INIT OPENAI
-    // -------------------------
     const client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
 
-    // -------------------------
-    // STREAM AUDIO FROM SUPABASE (NO buffer)
-    // -------------------------
-    const response = await fetch(audioUrl);
+    // ------------------------------------------------
+    // DOWNLOAD AUDIO STREAM
+    // ------------------------------------------------
+    const audioResponse = await fetch(audioUrl);
 
-    if (!response.ok) {
-      return res.status(400).json({ error: "Could not fetch audio file" });
+    if (!audioResponse.ok) {
+      return res.status(400).json({ error: "Failed to fetch audio" });
     }
 
-    const audioStream = response.body; // STREAM, NOT FILE
+    // Convert stream → FormData (OpenAI requires filename)
+    const formData = new FormData();
+    formData.append("file", audioResponse.body, {
+      filename: "call.wav",
+      contentType: "audio/wav"
+    });
+    formData.append("model", "gpt-4o-transcribe");
+    formData.append("prompt", process.env.SA_TRANSCRIBE_PROMPT);
+    formData.append("temperature", "0");
 
-    // -------------------------
-    // STAGE 1 — RAW ASR
-    // -------------------------
-    const rawTranscription = await client.audio.transcriptions.create({
-      model: "gpt-4o-transcribe",
-      file: audioStream, // STREAMED
-      prompt: process.env.SA_TRANSCRIBE_PROMPT,
-      temperature: 0
+    // ------------------------------------------------
+    // STAGE 1: RAW TRANSCRIPTION
+    // ------------------------------------------------
+    const rawResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: formData
     });
 
-    const rawText = rawTranscription.text || "";
+    const rawJson = await rawResp.json();
 
-    // -------------------------
-    // STAGE 2 — CLEAN / TRANSLATE / DIARIZE
-    // -------------------------
+    if (!rawJson.text) {
+      return res.status(500).json({ error: "Whisper failed", details: rawJson });
+    }
+
+    const rawText = rawJson.text;
+
+    // ------------------------------------------------
+    // STAGE 2: CLEAN / TRANSLATE / DIARIZE
+    // ------------------------------------------------
     const cleaned = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -58,19 +73,14 @@ export default async function handler(req, res) {
       temperature: 0
     });
 
-    const cleanText = cleaned.choices[0].message.content;
-
-    // -------------------------
-    // RETURN RESULT
-    // -------------------------
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       raw_transcript: rawText,
-      clean_transcript: cleanText
+      clean_transcript: cleaned.choices[0].message.content
     });
 
-  } catch (error) {
-    console.error("❌ Vercel function error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error("❌ SERVER ERROR:", err);
+    return res.status(500).json({ error: err.message });
   }
 }
