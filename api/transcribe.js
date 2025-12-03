@@ -13,25 +13,47 @@ export default async function handler(req, res) {
     }
 
     const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY
+      apiKey: process.env.OPENAI_API_KEY,
     });
 
-    // Download the audio file from the URL
-    const audioResponse = await fetch(audioUrl);
-    const arrayBuffer = await audioResponse.arrayBuffer();
-    const audioFile = new File([arrayBuffer], "audio.wav", { type: "audio/wav" });
+    // -----------------------------------------------------
+    // 1) Download binary audio CORRECTLY (Vercel fix)
+    // -----------------------------------------------------
+    const audioResponse = await fetch(audioUrl, {
+      method: "GET",
+      headers: {
+        "Range": "bytes=0-", // <--- forces full WAV download
+      }
+    });
 
-    // --- Stage 1: Raw transcription ---
+    if (!audioResponse.ok) {
+      return res.status(500).json({
+        error: "Failed to download audio: " + (await audioResponse.text())
+      });
+    }
+
+    const arrayBuffer = await audioResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // -----------------------------------------------------
+    // 2) Whisper transcription using Buffer (NOT File)
+    // -----------------------------------------------------
     const transcription = await client.audio.transcriptions.create({
       model: "gpt-4o-transcribe",
-      file: audioFile,
+      file: {
+        buffer,
+        name: "audio.wav",
+        type: "audio/wav"
+      },
       prompt: process.env.SA_TRANSCRIBE_PROMPT,
       temperature: 0
     });
 
     const rawText = transcription.text;
 
-    // --- Stage 2: Clean, translate, diarize ---
+    // -----------------------------------------------------
+    // 3) Clean + translate + diarize
+    // -----------------------------------------------------
     const cleaned = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -43,6 +65,9 @@ export default async function handler(req, res) {
 
     const cleanText = cleaned.choices[0].message.content;
 
+    // -----------------------------------------------------
+    // 4) Return correct result
+    // -----------------------------------------------------
     return res.status(200).json({
       success: true,
       raw_transcript: rawText,
@@ -50,7 +75,7 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("TRANSCRIBE ERROR:", error);
     res.status(500).json({ error: error.message });
   }
 }
