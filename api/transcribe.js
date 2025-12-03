@@ -38,7 +38,7 @@ export default async function handler(req, res) {
     // 2. RAW Transcription
     // ---------------------------
     const raw = await client.audio.transcriptions.create({
-      model: "whisper-1",
+      model: "gpt-4o-transcribe",
       file: audioFile,
       prompt: process.env.SA_TRANSCRIBE_PROMPT,
       temperature: 0
