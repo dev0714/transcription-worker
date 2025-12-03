@@ -1,3 +1,4 @@
+import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg";
 import OpenAI from "openai";
 
 export default async function handler(req, res) {
@@ -7,27 +8,37 @@ export default async function handler(req, res) {
     }
 
     const { audioUrl } = req.body;
+    if (!audioUrl) return res.status(400).json({ error: "audioUrl is required" });
 
-    if (!audioUrl) {
-      return res.status(400).json({ error: "audioUrl is required" });
-    }
+    // ---------- DOWNLOAD ORIGINAL AUDIO ----------
+    const audioResponse = await fetch(audioUrl, { redirect: "follow" });
+    const originalBuffer = Buffer.from(await audioResponse.arrayBuffer());
 
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY
-    });
+    // ---------- INIT FFMPEG ----------
+    const ffmpeg = createFFmpeg({ log: false });
+    await ffmpeg.load();
 
-    // Download from Supabase signed URL
-    const audioResponse = await fetch(audioUrl);
-    if (!audioResponse.ok) {
-      return res.status(400).json({ error: "Failed to download audio" });
-    }
+    // ---------- WRITE INPUT ----------
+    ffmpeg.FS("writeFile", "input.wav", await fetchFile(originalBuffer));
 
-    const arrayBuffer = await audioResponse.arrayBuffer();
-    const audioFile = new File([arrayBuffer], "audio.wav", {
+    // ---------- CONVERT TO CLEAN PCM WAV ----------
+    await ffmpeg.run(
+      "-i", "input.wav",
+      "-acodec", "pcm_s16le",
+      "-ar", "16000",
+      "-ac", "1",
+      "output.wav"
+    );
+
+    const converted = ffmpeg.FS("readFile", "output.wav");
+
+    const audioFile = new File([converted.buffer], "audio.wav", {
       type: "audio/wav",
     });
 
-    // --------- RAW TRANSCRIPTION ---------
+    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    // ---------- TRANSCRIBE ----------
     const transcribed = await client.audio.transcriptions.create({
       model: "gpt-4o-transcribe",
       file: audioFile,
@@ -37,7 +48,6 @@ export default async function handler(req, res) {
 
     const rawText = transcribed.text;
 
-    // --------- CLEAN + TRANSLATE ---------
     const cleaned = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -49,14 +59,14 @@ export default async function handler(req, res) {
 
     const cleanText = cleaned.choices[0].message.content;
 
-    // --------- RETURN TO SUPABASE ---------
     return res.status(200).json({
       success: true,
+      audioUrl,
       raw_transcript: rawText,
-      clean_transcript: cleanText,
+      clean_transcript: cleanText
     });
 
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
 }
