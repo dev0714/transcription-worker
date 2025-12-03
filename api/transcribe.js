@@ -4,7 +4,7 @@ import FormData from "form-data";
 
 export const config = {
   runtime: "nodejs",   // ✅ FIXED — the only valid Node runtime
-  maxDuration: 6000
+  maxDuration: 800
 };
 
 export default async function handler(req, res) {
