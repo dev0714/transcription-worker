@@ -41,6 +41,10 @@ export default async function handler(req, res) {
       model: "gpt-4o-transcribe",
       file: audioFile,
       prompt: process.env.SA_TRANSCRIBE_PROMPT,
+      response_format: "verbose_json",
+      chunking_strategy: "auto",          // <—— REQUIRED for long calls
+      enable_diarization: true,           // optional but recommended
+      temperature: 0,
       temperature: 0
     });
 
