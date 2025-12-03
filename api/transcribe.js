@@ -1,5 +1,8 @@
-import { createFFmpeg, fetchFile } from "@ffmpeg/ffmpeg";
 import OpenAI from "openai";
+
+export const config = {
+  runtime: "nodejs", // not edge, not nodejs18.x
+};
 
 export default async function handler(req, res) {
   try {
@@ -8,46 +11,44 @@ export default async function handler(req, res) {
     }
 
     const { audioUrl } = req.body;
-    if (!audioUrl) return res.status(400).json({ error: "audioUrl is required" });
 
-    // ---------- DOWNLOAD ORIGINAL AUDIO ----------
-    const audioResponse = await fetch(audioUrl, { redirect: "follow" });
-    const originalBuffer = Buffer.from(await audioResponse.arrayBuffer());
+    if (!audioUrl) {
+      return res.status(400).json({ error: "audioUrl is required" });
+    }
 
-    // ---------- INIT FFMPEG ----------
-    const ffmpeg = createFFmpeg({ log: false });
-    await ffmpeg.load();
-
-    // ---------- WRITE INPUT ----------
-    ffmpeg.FS("writeFile", "input.wav", await fetchFile(originalBuffer));
-
-    // ---------- CONVERT TO CLEAN PCM WAV ----------
-    await ffmpeg.run(
-      "-i", "input.wav",
-      "-acodec", "pcm_s16le",
-      "-ar", "16000",
-      "-ac", "1",
-      "output.wav"
-    );
-
-    const converted = ffmpeg.FS("readFile", "output.wav");
-
-    const audioFile = new File([converted.buffer], "audio.wav", {
-      type: "audio/wav",
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
     });
 
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    // ---------------------------
+    // 1. Download audio file
+    // ---------------------------
+    const audioResponse = await fetch(audioUrl);
 
-    // ---------- TRANSCRIBE ----------
-    const transcribed = await client.audio.transcriptions.create({
+    if (!audioResponse.ok) {
+      return res.status(400).json({ error: "Failed to fetch audio file" });
+    }
+
+    const arrayBuffer = await audioResponse.arrayBuffer();
+    const audioFile = new File([arrayBuffer], "audio.wav", {
+      type: "audio/wav"
+    });
+
+    // ---------------------------
+    // 2. RAW Transcription
+    // ---------------------------
+    const raw = await client.audio.transcriptions.create({
       model: "gpt-4o-transcribe",
       file: audioFile,
       prompt: process.env.SA_TRANSCRIBE_PROMPT,
-      temperature: 0,
+      temperature: 0
     });
 
-    const rawText = transcribed.text;
+    const rawText = raw.text;
 
+    // ---------------------------
+    // 3. Clean + Translate + Diarize
+    // ---------------------------
     const cleaned = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [
@@ -59,14 +60,20 @@ export default async function handler(req, res) {
 
     const cleanText = cleaned.choices[0].message.content;
 
+    // ---------------------------
+    // 4. Return both outputs
+    // ---------------------------
     return res.status(200).json({
       success: true,
-      audioUrl,
       raw_transcript: rawText,
       clean_transcript: cleanText
     });
 
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      error: error.message,
+      stack: error.stack
+    });
   }
 }
