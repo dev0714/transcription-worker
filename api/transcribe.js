@@ -1,10 +1,5 @@
 import OpenAI from "openai";
 
-export const config = {
-  runtime: "nodejs",
-  maxDuration: 50,  // optional but useful
-};
-
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -12,54 +7,56 @@ export default async function handler(req, res) {
     }
 
     const { audioUrl } = req.body;
+
     if (!audioUrl) {
       return res.status(400).json({ error: "audioUrl is required" });
     }
 
-    console.log("📥 Downloading audio:", audioUrl);
+    const client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY
+    });
 
-    // ---- DOWNLOAD FROM SUPABASE STORAGE ----
+    // Download from Supabase signed URL
     const audioResponse = await fetch(audioUrl);
     if (!audioResponse.ok) {
-      return res.status(400).json({
-        error: "Failed to download audio",
-        status: audioResponse.status,
-      });
+      return res.status(400).json({ error: "Failed to download audio" });
     }
 
     const arrayBuffer = await audioResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    // Create File object for OpenAI
-    const audioFile = new File([buffer], "audio.wav", {
+    const audioFile = new File([arrayBuffer], "audio.wav", {
       type: "audio/wav",
     });
 
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
+    // --------- RAW TRANSCRIPTION ---------
+    const transcribed = await client.audio.transcriptions.create({
+      model: "gpt-4o-transcribe",
+      file: audioFile,
+      prompt: process.env.SA_TRANSCRIBE_PROMPT,
+      temperature: 0,
     });
 
-    console.log("🎤 Sending to OpenAI diarization model...");
+    const rawText = transcribed.text;
 
-    // ---- FIXED: diarization requires chunking_strategy ----
-    const result = await client.audio.transcriptions.create({
-      model: "gpt-4o-transcribe-diarize",
-      file: audioFile,
-      chunking_strategy: "auto", // REQUIRED
+    // --------- CLEAN + TRANSLATE ---------
+    const cleaned = await client.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: process.env.FULL_UNIVERSAL_PROMPT },
+        { role: "user", content: rawText }
+      ],
       temperature: 0
     });
 
-    console.log("✅ Received transcript");
+    const cleanText = cleaned.choices[0].message.content;
 
+    // --------- RETURN TO SUPABASE ---------
     return res.status(200).json({
       success: true,
-      transcript: result.text,
-      speakers: result.speakers ?? null,
-      raw: result
+      raw_transcript: rawText,
+      clean_transcript: cleanText,
     });
 
   } catch (error) {
-    console.error("❌ Vercel Transcription Error:", error);
     return res.status(500).json({ error: error.message });
   }
 }
