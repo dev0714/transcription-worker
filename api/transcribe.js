@@ -3,7 +3,7 @@ import fetch from "node-fetch";
 import FormData from "form-data";
 
 export const config = {
-  runtime: "nodejs18.x",
+  runtime: "nodejs",   // ✅ FIXED — the only valid Node runtime
   maxDuration: 60
 };
 
@@ -23,28 +23,28 @@ export default async function handler(req, res) {
       apiKey: process.env.OPENAI_API_KEY
     });
 
-    // ------------------------------------------------
-    // DOWNLOAD AUDIO STREAM
-    // ------------------------------------------------
+    // -------------------------------
+    // 1. DOWNLOAD AUDIO STREAM
+    // -------------------------------
     const audioResponse = await fetch(audioUrl);
 
     if (!audioResponse.ok) {
       return res.status(400).json({ error: "Failed to fetch audio" });
     }
 
-    // Convert stream → FormData (OpenAI requires filename)
+    // Wrap stream in FormData (OpenAI Whisper requires filename)
     const formData = new FormData();
     formData.append("file", audioResponse.body, {
-      filename: "call.wav",
+      filename: "audio.wav",
       contentType: "audio/wav"
     });
     formData.append("model", "gpt-4o-transcribe");
     formData.append("prompt", process.env.SA_TRANSCRIBE_PROMPT);
     formData.append("temperature", "0");
 
-    // ------------------------------------------------
-    // STAGE 1: RAW TRANSCRIPTION
-    // ------------------------------------------------
+    // -------------------------------
+    // 2. RAW TRANSCRIPTION
+    // -------------------------------
     const rawResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: {
@@ -56,15 +56,18 @@ export default async function handler(req, res) {
     const rawJson = await rawResp.json();
 
     if (!rawJson.text) {
-      return res.status(500).json({ error: "Whisper failed", details: rawJson });
+      return res.status(500).json({
+        error: "Whisper failed",
+        details: rawJson
+      });
     }
 
     const rawText = rawJson.text;
 
-    // ------------------------------------------------
-    // STAGE 2: CLEAN / TRANSLATE / DIARIZE
-    // ------------------------------------------------
-    const cleaned = await client.chat.completions.create({
+    // -------------------------------
+    // 3. CLEAN / TRANSLATE / DIARIZE
+    // -------------------------------
+    const cleanResp = await client.chat.completions.create({
       model: "gpt-4o",
       messages: [
         { role: "system", content: process.env.FULL_UNIVERSAL_PROMPT },
@@ -73,14 +76,16 @@ export default async function handler(req, res) {
       temperature: 0
     });
 
+    const cleanText = cleanResp.choices[0].message.content;
+
     return res.status(200).json({
       success: true,
       raw_transcript: rawText,
-      clean_transcript: cleaned.choices[0].message.content
+      clean_transcript: cleanText
     });
 
-  } catch (err) {
-    console.error("❌ SERVER ERROR:", err);
-    return res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error("❌ Vercel Function Error:", error);
+    return res.status(500).json({ error: error.message });
   }
 }
